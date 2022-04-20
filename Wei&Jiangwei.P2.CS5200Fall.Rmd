@@ -1,0 +1,647 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Ctrl+Shift+Enter*. 
+
+---
+Practicum 2
+Author: Wei zhang & Jiangwei Shi
+---
+
+```{r}
+require(RMySQL)
+
+lapply(dbListConnections(MySQL()), dbDisconnect)
+
+db_user <- 'root'
+db_password <- '997630Zw*'
+db_name <- 'PracticumTwo'
+db_host <- 'localhost'
+db_port <- 3306
+
+dbcon <- dbConnect(MySQL(), user = db_user, password = db_password, dbname=db_name, host = db_host, port = db_port)
+```
+
+```{sql connection=dbcon}
+SET GLOBAL local_infile = 'ON';
+```
+
+```{sql connection=dbcon}
+SET GLOBAL sql_mode=(SELECT REPLACE(@@sql_mode,'ONLY_FULL_GROUP_BY',''));
+```
+
+### Part 1
+
+#### 1.1 ERD 
+![General ERD](./GeneralSchema.png)
+
+#### 1.2 Create tables.
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  AuthorList
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  Article
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  Author
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Journal
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  History
+```
+
+##### Create Author
+```{sql connection=dbcon}
+CREATE TABLE Author(
+  aId INTEGER NOT NULL,
+  lastName VARCHAR(1000) NOT NULL,
+  foreName VARCHAR(1000) NOT NULL,
+  initialName VARCHAR(1000) NOT NULL,
+  affiliation VARCHAR(1000),
+  PRIMARY KEY (aId)
+)
+```
+
+##### Create History
+```{sql connection=dbcon}
+CREATE TABLE History(
+  hId INTEGER NOT NULL,
+  pubMedDate DATE NOT NULL,
+  PRIMARY KEY (hId)
+)
+```
+
+##### Create Journal
+
+```{sql connection=dbcon}
+CREATE TABLE Journal(
+  jId INTEGER NOT NULL,
+  issn VARCHAR(100) NOT NULL UNIQUE,
+  jName VARCHAR(1000) NOT NULL,
+  pubDate VARCHAR(1000) NOT NULL,
+  volume INTEGER NOT NULL,
+  issue INTEGER NOT NULL,
+  PRIMARY KEY (jId)
+)
+```
+
+##### Create Article
+```{sql connection=dbcon}
+CREATE TABLE Article(
+  pmId INTEGER NOT NULL,
+  title VARCHAR(1000) NOT NULL,
+  dataCreated DATE NOT NULL,
+  jId INTEGER NOT NULL,
+  hId INTEGER NOT NULL,
+  PRIMARY KEY (pmId),
+  FOREIGN KEY (jId) REFERENCES Journal(jId),
+  FOREIGN KEY (hId) REFERENCES History(hId)
+)
+```
+
+##### Create AuthorList (joint table for Author and Article)
+```{sql connection=dbcon}
+CREATE TABLE AuthorList(
+  alId INTEGER NOT NULL,
+  pmId INTEGER NOT NULL,
+  aId INTEGER NOT NULL,
+  PRIMARY KEY (alId),
+  FOREIGN KEY (pmId) REFERENCES Article(pmId),
+  FOREIGN KEY (aId) REFERENCES Author(aId)
+)
+```
+
+#### 1.3 Load data from XML to database.
+
+```{r parseXML}
+library(XML)
+
+library(RSQLite)
+library(DBI)
+
+path <- getwd();
+fn <- "pubmed_sample.xml"
+fpn = paste(path, fn, sep="/")
+
+xmlObj <- xmlParse(fpn)
+```
+
+#### Load History
+```{r}
+xpathEx <- "//History/PubMedPubDate[@PubStatus='pubmed']/Year"
+year <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+xpathEx <- "//History/PubMedPubDate[@PubStatus='pubmed']/Month"
+month <- xpathSApply(xmlObj, xpathEx, xmlValue)
+month <- ifelse(nchar(month) > 1, month, paste0("0", month)) 
+
+xpathEx <- "//History/PubMedPubDate[@PubStatus='pubmed']/Day"
+day <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+pubMedDate <- paste0(year, month, day)
+pubMedDate <- as.Date(pubMedDate, "%Y%m%d")
+
+df.History<- data.frame(pubMedDate)
+
+hId <- seq.int(1, nrow(df.History))
+df.History <- cbind(hId, df.History)
+print(df.History)
+```
+#### Load Journal
+```{r}
+xpathEx <- "//Journal/ISSN"
+issn <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+xpathEx <- "//Journal/Title"
+jName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+xpathEx <- "//Journal//PubDate"
+pubDate <- xpathSApply(xmlObj, xpathEx, xmlValue)
+# some date is a range.
+
+xpathEx <- "//Journal//Volume"
+volume <- xpathSApply(xmlObj, xpathEx, xmlValue)
+volume <- as.integer(volume)
+
+xpathEx <- "//Journal//Issue"
+issue <- xpathSApply(xmlObj, xpathEx, xmlValue)
+issue <- as.integer(issue)
+
+df.Journal <- data.frame(issn, jName, pubDate, volume, issue)
+jId <- seq.int(1, nrow(df.Journal))
+df.Journal <- cbind(jId, df.Journal)
+print(df.Journal)
+```
+
+##### Load Article
+```{r}
+xpathEx <- "//MedlineCitation/PMID"
+pmId <- xpathSApply(xmlObj, xpathEx, xmlValue)
+pmId <- as.integer(pmId)
+
+xpathEx <- "//ArticleTitle"
+title <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+xpathEx <- "//DateCreated"
+dateCreated <- xpathSApply(xmlObj, xpathEx, xmlValue)
+dateCreated <- as.Date(dateCreated, '%Y%m%d')
+
+
+df.Article <- data.frame(pmId, title, dateCreated)
+
+df.Article[, ncol(df.Article) + 1] = NA
+colnames(df.Article)[4] <- "jId"
+
+df.Article[, ncol(df.Article) + 1] = NA
+colnames(df.Article)[5] <- "hId"
+
+for (r in 1:nrow(df.Article)) {
+  pmid <- df.Article[r, "pmId"]
+  xpathEx <- paste0("//MedlineCitation[PMID='",pmid,"']//Journal/Title")
+  journalName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  xpathEx <- paste0("//MedlineCitation[PMID='",pmid,"']//Journal//PubDate")
+  pubDate <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  
+  df.Article[r, "jId"] <- unique(df.Journal$jId[which(df.Journal$jName == journalName & df.Journal$pubDate == pubDate)])
+  
+  xpathEx <- paste0("//MedlineCitation[PMID='",pmid,"']/following-sibling::PubmedData/History/PubMedPubDate[@PubStatus='pubmed']/Year")
+  year <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+xpathEx <- paste0("//MedlineCitation[PMID='",pmid,"']/following-sibling::PubmedData/History/PubMedPubDate[@PubStatus='pubmed']/Month")
+month <- xpathSApply(xmlObj, xpathEx, xmlValue)
+month <- ifelse(nchar(month) > 1, month, paste0("0", month)) 
+
+xpathEx <- paste0("//MedlineCitation[PMID='",pmid,"']/following-sibling::PubmedData/History/PubMedPubDate[@PubStatus='pubmed']/Day")
+day <- xpathSApply(xmlObj, xpathEx, xmlValue)
+
+pubMedDate <- paste0(year, month, day)
+pubMedDate <- as.Date(pubMedDate, "%Y%m%d")
+  
+  df.Article[r, "hId"] <- df.History$hId[which(df.History$pubMedDate == pubMedDate)]
+}
+
+print(df.Article)
+```
+
+#### Load Author
+```{r}
+pmids <- df.Article$pmId
+
+df.Author <- data.frame(matrix(ncol = 4, nrow = 0))
+x <- c("lastName", "foreName", "initials", "affiliation")
+colnames(df.Author) <- x
+
+idx = 1
+for (pmid in pmids) {
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/LastName")
+  lastName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/ForeName")
+  foreName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/Initials")
+  initials <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  for (r in 1:length(lastName)) {
+    df.Author[idx, "lastName"] <- lastName[r]
+    df.Author[idx, "foreName"] <- foreName[r]
+    df.Author[idx, "initials"] <- initials[r]
+    
+    xpathEx <-  paste0("//MedlineCitation[PMID='", pmid, "']//Author[LastName='",lastName[r],"' and ForeName='",foreName[r],"' and Initials='",initials[r],"']//Affiliation")
+    affiliation <- xpathSApply(xmlObj, xpathEx, xmlValue)
+    
+    if(length(affiliation) == 0) {
+      affiliation <- NA
+    }
+    
+    df.Author[idx, "affiliation"] <- affiliation
+    idx = idx + 1
+  }
+}
+
+df.Author <- unique(df.Author)
+aId <- seq.int(1, nrow(df.Author))
+df.Author <- cbind(aId, df.Author)
+print(df.Author)
+```
+
+
+#### Load AuthorList
+```{r}
+df.AuthorList <- data.frame(matrix(ncol = 2, nrow = 0))
+x <- c("pmId", "aId")
+colnames(df.AuthorList) <- x
+
+idx = 1
+pmids <- df.Article$pmId
+
+df.Author$affiliation[is.na(df.Author$affiliation)] <- "0"
+  
+for (pmid in pmids) {
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/LastName")
+  lastName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/ForeName")
+  foreName <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  xpathEx <-
+    paste0("//MedlineCitation[PMID='", pmid, "']//Author/Initials")
+  initials <- xpathSApply(xmlObj, xpathEx, xmlValue)
+  
+  for (r in 1:length(lastName)) {
+    xpathEx <-  paste0("//MedlineCitation[PMID='", pmid, "']//Author[LastName='",lastName[r],"' and ForeName='",foreName[r],"' and Initials='",initials[r],"']//Affiliation")
+    affiliation <- xpathSApply(xmlObj, xpathEx, xmlValue)
+    
+    if (length(affiliation) == 0) {
+      affiliation <- "0"
+    }
+      
+    aid <- df.Author$aId[which(
+        df.Author$lastName == lastName[r] &
+          df.Author$foreName == foreName[r] &
+          df.Author$initials == initials[r] &
+          df.Author$affiliation == affiliation
+     )]
+    
+    df.AuthorList[idx, "pmId"] <- pmid
+    df.AuthorList[idx, "aId"] <- aid
+    idx = idx + 1
+  }
+}
+
+df.Author$affiliation[df.Author$affiliation == "0"] <- NA
+
+alId <- seq.int(1, nrow(df.AuthorList))
+df.AuthorList <- cbind(alId, df.AuthorList)
+
+print(df.AuthorList)
+```
+#### Write to database
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  authorlist
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  Article
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  Author
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  Journal
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS  History
+```
+
+##### Write AuthorList
+
+
+```{r}
+dbWriteTable(dbcon, "AuthorList", df.AuthorList, overwrite=T)
+```
+
+```{sql connection=dbcon}
+SELECT * FROM AuthorList;
+```
+
+##### Write Article
+
+
+```{r}
+dbWriteTable(dbcon, "Article", df.Article, overwrite=T)
+```
+
+```{sql connection=dbcon}
+SELECT * FROM Article;
+```
+
+##### Write Author
+
+```{r}
+dbWriteTable(dbcon, "Author", df.Author, overwrite=T)
+```
+
+```{sql connection=dbcon}
+SELECT * FROM Author;
+```
+
+
+#### Write Journal
+
+```{r}
+dbWriteTable(dbcon, "Journal", df.Journal, overwrite=T)
+```
+
+```{sql connection=dbcon}
+SELECT * FROM Journal;
+```
+
+##### Write History
+
+```{r}
+dbWriteTable(dbcon, "History", df.History, overwrite=T)
+```
+
+```{sql connection=dbcon}
+SELECT * FROM History;
+```
+
+
+### Part 2
+
+#### 2.1 ERD
+![Star Schema ERD](./StarSchema.png)
+
+#### Notes: I keep the joint table for Author and Article as a bridge table according to professor said in piazza @276
+
+#### 2.2 Create a star schema
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS AuthorListBri
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS AuthorDim
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS ArticleFact
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS JournalDim
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS HistoryDim
+```
+
+
+```{sql connection=dbcon}
+CREATE TABLE AuthorDim(
+  aId INTEGER NOT NULL,
+  lastName VARCHAR(1000) NOT NULL,
+  foreName VARCHAR(1000) NOT NULL,
+  initialName VARCHAR(1000) NOT NULL,
+  affiliation VARCHAR(1000),
+  PRIMARY KEY (aId)
+)
+```
+
+```{sql connection=dbcon}
+CREATE TABLE JournalDim(
+  jId INTEGER NOT NULL,
+  issn VARCHAR(100) NOT NULL,
+  jName VARCHAR(1000) NOT NULL,
+  pubDate VARCHAR(1000) NOT NULL,
+  volume VARCHAR(1000) NOT NULL,
+  issue VARCHAR(1000) NOT NULL,
+  PRIMARY KEY (jId)
+)
+```
+
+```{sql connection=dbcon}
+CREATE TABLE HistoryDim(
+  hId INTEGER NOT NULL,
+  pubMedDate DATE NOT NULL,
+  PRIMARY KEY (hId)
+)
+```
+
+```{sql connection=dbcon}
+CREATE TABLE ArticleFact(
+  pmId INTEGER NOT NULL,
+  title VARCHAR(1000) NOT NULL,
+  dataCreated DATE NOT NULL,
+  jId INTEGER NOT NULL,
+  hId INTEGER NOT NULL,
+  aId INTEGER NOT NULL,
+  PRIMARY KEY (pmId),
+  FOREIGN KEY (jId) REFERENCES JournalDim(jId),
+  FOREIGN KEY (hId) REFERENCES HistoryDim(hId)
+)
+```
+
+
+```{sql connection=dbcon}
+CREATE TABLE AuthorListBri(
+  alId INTEGER NOT NULL,
+  pmId INTEGER NOT NULL,
+  aId INTEGER NOT NULL,
+  PRIMARY KEY (alId),
+  FOREIGN KEY(pmId) REFERENCES ArticleFact(pmId),
+  FOREIGN KEY(aId) REFERENCES AuthorDim(aId)
+)
+```
+
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS AuthorListBri
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS AuthorDim
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS ArticleFact
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS JournalDim
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS HistoryDim
+```
+
+```{r}
+dbWriteTable(dbcon, "AuthorListBri", df.AuthorList, overwrite=T)
+dbReadTable(dbcon, "AuthorListBri")
+```
+
+```{r}
+dbWriteTable(dbcon, "ArticleFact", df.Article, overwrite=T)
+dbReadTable(dbcon, "ArticleFact")
+```
+
+```{r}
+dbWriteTable(dbcon, "AuthorDim", df.Author, overwrite=T)
+dbReadTable(dbcon, "AuthorDim")
+```
+
+```{r}
+dbWriteTable(dbcon, "JournalDim", df.Journal, overwrite=T)
+dbReadTable(dbcon, "JournalDim")
+```
+
+
+```{r}
+dbWriteTable(dbcon, "HistoryDim", df.History, overwrite=T)
+dbReadTable(dbcon, "HistoryDim")
+```
+
+##### 2.3 create Summary Tables
+
+![SummaryAuthor](./AuthorFact.png)
+
+![SummaryJournal](./JournalFact.png)
+
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS TempOfAuthor
+```
+
+```{sql connection=dbcon}
+Create TABLE TempOfAuthor As SELECT  alId,ArticleFact.pmId, authorlistbri.aId,lastName, foreName, pubMedDate,count(DISTINCT ArticleFact.pmId) AS NumArticles FROM ArticleFact 
+left JOIN authorlistbri ON ArticleFact.pmId = authorlistbri.pmId 
+left JOIN AuthorDim ON authordim.aId = authorlistbri.aId
+left JOIN HistoryDim ON ArticleFact.hId = HistoryDim.hId
+Group by authorlistbri.alId
+```
+
+```{sql connection=dbcon}
+select * from TempOfAuthor
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS SummaryOfAuthor
+```
+
+```{sql connection=dbcon}
+Create TABLE SummaryOfAuthor As select alId, aId,lastName,foreName,year(pubMedDate) AS year,
+case when month(pubMedDate)<=3 then '1'
+when month(pubMedDate)>=4 and month(pubMedDate)<=6 then '2'
+when month(pubMedDate)>=7 and month(pubMedDate)<=9 then '3'
+when month(pubMedDate)>=10 then '4'
+END AS Quarter,
+NumArticles FROM TempOfAuthor order by NumArticles desc ,year 
+```
+
+```{sql connection=dbcon}
+select * from SummaryOfAuthor order by alId
+```
+
+
+```{sql connection=dbcon}
+select Quarter,count(NumArticles) from SummaryOfAuthor group by Quarter
+```
+
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS TempOfJournal
+```
+
+```{sql connection=dbcon}
+Create TABLE TempOfJournal As SELECT JournalDim.jId,JournalDim.issn,jName,HistoryDim.pubMedDate,count(DISTINCT ArticleFact.jId) AS NumArticles FROM ArticleFact 
+JOIN authorlistbri ON ArticleFact.pmId = authorlistbri.pmId 
+JOIN AuthorDim ON AuthorListbri.aId = AuthorDim.aId 
+JOIN HistoryDim ON ArticleFact.hId = HistoryDim.hId 
+JOIN JournalDim ON ArticleFact.jId = JournalDim.jId
+GROUP BY JournalDim.jId
+```
+
+```{sql connection=dbcon}
+select * FROM TempOfJournal
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS SummaryOfJourna
+```
+
+```{sql connection=dbcon}
+Create TABLE SummaryOfJourna As select jId, issn, jName, year(pubMedDate) AS year,
+case when month(pubMedDate)<=3 then '1'
+when month(pubMedDate)>=4 and month(pubMedDate)<=6 then '2'
+when month(pubMedDate)>=7 and month(pubMedDate)<=9 then '3'
+when month(pubMedDate)>=10 then '4'
+END AS Quarter,
+NumArticles FROM TempOfJournal order by NumArticles desc ,year 
+```
+
+```{sql connection=dbcon}
+select jName,year,Quarter,count(NumArticles) FROM SummaryOfJourna group by jId
+```
+
+#Part 3 Explore and Mine Data
+
+```{sql connection=dbcon}
+select Quarter,sum( NumArticles) FROM SummaryOfJourna group by Quarter order by Quarter
+```
+
+```{r}
+library(ggplot2)
+df.articlePerQua <- dbGetQuery(dbcon, "select Quarter,sum( NumArticles) FROM SummaryOfJourna group by Quarter order by Quarter")
+x <- c("quarter", "sum")
+colnames(df.articlePerQua) <- x
+ggplot(data = df.articlePerQua, aes(x=quarter, y=sum, group=1)) + geom_line() + geom_point()
+```
+#### Conclusion: We drew a line gragh on articles published in all journal each quater and found that there might be a seaonal pattern. The number of articles published on the fourth quarter is the highest and the number of articles published on the second quater is the lowest.
+
+```{r}
+#dbDisconnect(dbcon)
+```
