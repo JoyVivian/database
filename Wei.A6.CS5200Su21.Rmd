@@ -1,0 +1,145 @@
+---
+title: "Assignment3 Implement a Retional Database"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+#### Connect to sqlite.
+```{r}
+library(RSQLite)
+
+fpath = "/Users/weizhang/databases/"
+dbfile = "wei.A3.CS5200Su21.sqlite"
+
+dbcon <- dbConnect(RSQLite::SQLite(), paste0(fpath, dbfile))
+```
+
+#### To enable Foreign Key Constraint.
+```{r} 
+dbExecute(dbcon, "PRAGMA foreign_keys = ON")
+```
+
+#### Drop tables if exist.
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Course
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Lesson
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Subject
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS Unit
+```
+
+```{sql connection=dbcon}
+DROP TABLE IF EXISTS CoursePrerequisite
+```
+
+#### Create Course Table.
+```{sql connection=dbcon}
+CREATE TABLE Course(
+cid TEXT NOT NULL,
+title TEXT NOT NULL,
+lengthInDays NUMBER NOT NULL,
+PRIMARY KEY(cid)
+)
+```
+
+#### Create Subject Table.
+```{sql connection=dbcon}
+CREATE TABLE Subject(
+sid NUMBER NOT NULL,
+subject TEXT NOT NULL,
+PRIMARY KEY (sid) 
+)
+```
+
+#### Create Lesson Table.
+```{sql connection=dbcon}
+CREATE TABLE Lesson(
+tid NUMBER NOT NULL,
+title TEXT NOT NULL,
+lengthInHrs NUMBER NOT NULL,
+sid NUMBER NOT NULL,
+PRIMARY KEY (tid),
+FOREIGN KEY (sid) REFERENCES Subject(sid)
+)
+```
+
+#### Create Unit Table.
+#### According to the requirements, some courses may not contain any lessons and some lessons may not be in any courses. So cid and tid can be NULL. Also, cid, and tid can not both be NULL. So, make them as a composite key to make sure that they can not both be null. Refer to Piazza @96.
+```{sql connection=dbcon}
+CREATE TABLE Unit(
+cid TEXT,
+tid NUMBER,
+PRIMARY KEY (cid, tid),
+FOREIGN KEY (cid) REFERENCES Course(cid),
+FOREIGN KEY (tid) REFERENCES Lesson(tid)
+)
+```
+
+#### According to the requirements, there can be zero or more prerequisite courses. So, prerequisiteId can be NULL.
+#### Create CoursePrerequisite Table.
+
+```{sql connection=dbcon}
+CREATE TABLE CoursePrerequisite(
+courseId NUMBER NOT NULL,
+prerequisiteId NUMBER,
+PRIMARY KEY(courseId, prerequisiteId),
+FOREIGN KEY (courseId) REFERENCES Lesson(tid),
+FOREIGN KEY (prerequisiteId) REFERENCES Lesson(tid),
+check(courseId != prerequisiteId)
+)
+```
+
+#### I create this Trigger to ensure that only the title of a lesson starts by CS can be successfully inserted into Lesson table.
+#### Create Trigger
+```{sql connection=dbcon}
+CREATE TRIGGER validate 
+  BEFORE INSERT ON Lesson
+  BEGIN 
+  SELECT 
+    CASE 
+      WHEN NEW.title NOT LIKE 'CS%'
+      THEN RAISE(ABORT, 'Invalid Title')
+  END;
+END;
+```
+
+#### Insert an invalid data to test it.
+```{sql connection=dbcon}
+INSERT INTO Subject VALUES(2, 'Database');
+```
+
+```{sql connection=dbcon}
+INSERT INTO Lesson VALUES(1, 'ECE5700', 1.5, 2);
+```
+
+#### Use select to see if it is inserted successfully.
+```{sql connection=dbcon}
+SELECT * FROM Lesson;
+```
+
+#### Insert a valid value to test.
+```{sql connection=dbcon}
+INSERT INTO Lesson VALUES(1, 'CS5200', 1.5, 2);
+```
+
+#### Use select to see if it is inserted successfully.
+```{sql connection=dbcon}
+SELECT * FROM Lesson;
+```
+
+#### Disconnect Sqlite.
+```{r}
+dbDisconnect(dbcon)
+```
+

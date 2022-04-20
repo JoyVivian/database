@@ -1,0 +1,84 @@
+---
+title: "Connect R to Remote MySQL Instance"
+output: html_notebook
+---
+
+## MySQL on AWS
+
+This tutorial explains how to connect to a RDS on AWS. The RDS is a (free) MySQL database instance that must be set up prior through [AWS](https://aws.amazon.com/rds/free/).
+
+Requires the **RMySQL** package to be installed.
+
+```{r}
+# 1. Library
+library(RMySQL)
+
+# 2. Settings
+db_user <- 'user'
+db_password <- 'password'
+db_name <- 'cs5200-db-1'
+db_table <- 'courses'
+db_host <- 'cs5200-db-1.c07w5dbka9x.us-east-2.rds.amazonaws.com' # AWS Host
+db_port <- 3306
+
+# 3. Read data from db
+mydb <-  dbConnect(MySQL(), user = db_user, password = db_password,
+                 dbname = db_name, host = db_host, port = db_port)
+s <- paste0("select * from ", db_table)
+rs <- dbSendQuery(mydb, s)
+df <-  fetch(rs, n = -1)
+df
+```
+
+## MySQL on db4free.net
+
+```{r}
+# 1. Library
+library(RMySQL)
+
+# 2. Settings
+db_user <- 'cs5200' 
+db_password <- 'khour#2021'
+db_name <- 'cs5200db1'
+db_table <- 'courses'
+db_host <- 'db4free.net' # Host 85.10.205.173
+db_port <- 3306
+
+# 3. Read data from db
+mydb <-  dbConnect(MySQL(), user = db_user, password = db_password,
+                 dbname = db_name, host = db_host, port = db_port)
+```
+
+```{sql connection=mydb}
+create table courses (
+  cid INTEGER NOT NULL,
+  title varchar(32) NOT NULL,
+  credits INTEGER NOT NULL
+)
+```
+
+```{sql connection=mydb}
+insert into courses
+  values (1100,"CS and Application", 4)
+```
+
+```{sql connection=mydb}
+select * from courses
+```
+
+```{r}
+s <- paste0("select * from ", "courses")
+rs <- dbSendQuery(mydb, s)
+df <-  fetch(rs, n = -1)
+df
+```
+
+
+## Disconnect from Database
+
+Disconnect from the database (important as database servers have limited numbers of connection and each connection uses a resource).
+
+```{r}
+dbDisconnect(mydb)
+```
+
